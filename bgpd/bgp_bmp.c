@@ -784,7 +784,7 @@ static void bmp_eor(struct bmp *bmp, afi_t afi, safi_t safi, uint8_t flags)
 
 static struct stream *bmp_update(const struct prefix *p, struct prefix_rd *prd,
 				 struct peer *peer, struct attr *attr,
-				 afi_t afi, safi_t safi)
+				 afi_t afi, safi_t safi, uint32_t addpath_id)
 {
 	struct bpacket_attr_vec_arr vecarr;
 	struct stream *s;
@@ -809,7 +809,12 @@ static struct stream *bmp_update(const struct prefix *p, struct prefix_rd *prd,
 
 	/* space check? */
 
-	/* peer_cap_enhe & add-path removed */
+	/* addpath id */
+	if (addpath_id){
+		stream_putl(s, addpath_id);
+	}
+
+	/* peer_cap_enhe removed*/
 	if (afi == AFI_IP && safi == SAFI_UNICAST)
 		stream_put_prefix(s, p);
 	else {
@@ -833,7 +838,7 @@ static struct stream *bmp_update(const struct prefix *p, struct prefix_rd *prd,
 
 static struct stream *bmp_withdraw(const struct prefix *p,
 				   struct prefix_rd *prd, afi_t afi,
-				   safi_t safi)
+				   safi_t safi, uint32_t addpath_id)
 {
 	struct stream *s;
 	size_t attrlen_pos = 0, mp_start, mplen_pos;
@@ -846,6 +851,9 @@ static struct stream *bmp_withdraw(const struct prefix *p,
 	stream_putw(s, 0);
 
 	if (afi == AFI_IP && safi == SAFI_UNICAST) {
+		if (addpath_id){
+			stream_putl(s, addpath_id)
+		}
 		stream_put_prefix(s, p);
 		unfeasible_len = stream_get_endp(s) - BGP_HEADER_SIZE
 				 - BGP_UNFEASIBLE_LEN;
@@ -875,7 +883,7 @@ static struct stream *bmp_withdraw(const struct prefix *p,
 static void bmp_monitor(struct bmp *bmp, struct peer *peer, uint8_t flags,
 			const struct prefix *p, struct prefix_rd *prd,
 			struct attr *attr, afi_t afi, safi_t safi,
-			time_t uptime)
+			time_t uptime, int addpath_id)
 {
 	struct stream *hdr, *msg;
 	struct timeval tv = { .tv_sec = uptime, .tv_usec = 0 };
@@ -883,9 +891,9 @@ static void bmp_monitor(struct bmp *bmp, struct peer *peer, uint8_t flags,
 
 	monotime_to_realtime(&tv, &uptime_real);
 	if (attr)
-		msg = bmp_update(p, prd, peer, attr, afi, safi);
+		msg = bmp_update(p, prd, peer, attr, afi, safi, addpath_id);
 	else
-		msg = bmp_withdraw(p, prd, afi, safi);
+		msg = bmp_withdraw(p, prd, afi, safi, addpath_id);
 
 	hdr = stream_new(BGP_MAX_PACKET_SIZE);
 	bmp_common_hdr(hdr, BMP_VERSION_3, BMP_TYPE_ROUTE_MONITORING);
@@ -905,6 +913,7 @@ static bool bmp_wrsync(struct bmp *bmp, struct pullwr *pullwr)
 {
 	afi_t afi;
 	safi_t safi;
+	uint32_t addpath_id = 0;
 
 	if (bmp->syncafi == AFI_MAX) {
 		FOREACH_AFI_SAFI (afi, safi) {
@@ -944,7 +953,6 @@ afibreak:
 
 	struct bgp_table *table = bmp->targets->bgp->rib[afi][safi];
 	struct bgp_dest *bn;
-	struct bgp_path_info *bpi = NULL, *bpiter;
 	struct bgp_adj_in *adjin = NULL, *adjiter;
 
 	if (afi == AFI_L2VPN && safi == SAFI_EVPN) {
@@ -1062,11 +1070,17 @@ afibreak:
 		prd = (struct prefix_rd *)bgp_dest_get_prefix(bmp->syncrdpos);
 
 	if (bpi)
+		if (bgp_addpath_encode_rx(bpi->peer, afi, safi)){
+			addpath_id = bpi->addpath_rx_id;
+		}
 		bmp_monitor(bmp, bpi->peer, BMP_PEER_FLAG_L, bn_p, prd,
-			    bpi->attr, afi, safi, bpi->uptime);
+			    bpi->attr, afi, safi, bpi->uptime, addpath_id);
 	if (adjin)
+		if (bgp_addpath_encode_rx(adjin->peer, afi, safi)){
+			addpath_id = bpi -> addpath_rx_id;
+		}
 		bmp_monitor(bmp, adjin->peer, 0, bn_p, prd, adjin->attr, afi,
-			    safi, adjin->uptime);
+			    safi, adjin->uptime, addpath_id);
 
 	return true;
 }
